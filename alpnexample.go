@@ -4,9 +4,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"fmt"
 	"log"
 	"math/big"
@@ -18,6 +20,10 @@ const (
 	domain       = "boulder-dev-pub.maciejd.certsbridge.com"
 	AcmeTlsProto = "acme-tls/1"
 )
+
+// As defined in https://rolandshoemaker.github.io/acme-tls-alpn/draft-ietf-acme-tls-alpn.html#tls-with-application-level-protocol-negotiation-tls-alpn-challenge
+// id-pe OID + 30 (acmeIdentifier) + 1 (v1)
+var IdPeAcmeIdentifierV1 = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 30, 1}
 
 type CertSelection struct {
 	Cert  tls.Certificate
@@ -44,6 +50,14 @@ func (cs *CertSelection) GenerateACMECert() (*tls.Certificate, error) {
 		return nil, fmt.Errorf("ecdsa.GenerateKey(): %v", err)
 	}
 
+	keyAuth := cs.Token // TODO: build real key authorization from token.
+	shasum := sha256.Sum256([]byte(keyAuth))
+	acmeExtension := pkix.Extension{
+		Id:       IdPeAcmeIdentifierV1,
+		Critical: true,
+		Value:    shasum[:],
+	}
+
 	template := &x509.Certificate{
 		Subject: pkix.Name{
 			CommonName:   domain,
@@ -56,9 +70,8 @@ func (cs *CertSelection) GenerateACMECert() (*tls.Certificate, error) {
 		NotAfter:              time.Now().Add(1 * time.Hour),
 		SerialNumber:          big.NewInt(1),
 		BasicConstraintsValid: true,
+		ExtraExtensions:       []pkix.Extension{acmeExtension},
 	}
-
-	// TODO: acme extension
 
 	cert, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
 	if err != nil {
