@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,6 +14,8 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -26,8 +29,8 @@ const (
 var IdPeAcmeIdentifierV1 = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 30, 1}
 
 type CertSelection struct {
-	Cert  tls.Certificate
-	Token string
+	Cert    tls.Certificate
+	KeyAuth string
 }
 
 func (cs *CertSelection) GetCertificate(ch *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -50,8 +53,7 @@ func (cs *CertSelection) GenerateACMECert() (*tls.Certificate, error) {
 		return nil, fmt.Errorf("ecdsa.GenerateKey(): %v", err)
 	}
 
-	keyAuth := cs.Token // TODO: build real key authorization from token.
-	shasum := sha256.Sum256([]byte(keyAuth))
+	shasum := sha256.Sum256([]byte(cs.KeyAuth))
 	acmeExtension := pkix.Extension{
 		Id:       IdPeAcmeIdentifierV1,
 		Critical: true,
@@ -84,15 +86,15 @@ func (cs *CertSelection) GenerateACMECert() (*tls.Certificate, error) {
 	}, nil
 }
 
-func runServer() error {
+func runServer() *CertSelection {
 	cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
 	if err != nil {
-		return fmt.Errorf("tls.LoadX509KeyPair(): %v", err)
+		log.Fatalf("tls.LoadX509KeyPair(): %v", err)
 	}
 
 	cs := &CertSelection{
-		Cert:  cert,
-		Token: "aaaaaaaaaaaaaa",
+		Cert:    cert,
+		KeyAuth: "aaaaaaaaaaaaaa",
 	}
 
 	config := &tls.Config{
@@ -116,7 +118,26 @@ func runServer() error {
 			AcmeTlsProto: closeHandle,
 		},
 	}
-	return s.ListenAndServeTLS("", "")
+
+	go func() {
+		log.Println("Running :80 -> :443 redirect")
+		if err := http.ListenAndServe(":80", http.HandlerFunc(redirectTLS)); err != nil {
+			log.Fatalf("ListenAndServe :80 error: %v", err)
+		}
+	}()
+
+	go func() {
+		log.Println("Running TLS server")
+		if err := s.ListenAndServeTLS("", ""); err != nil {
+			log.Fatalf("ListenAndServeTLS error: %v", err)
+		}
+	}()
+
+	return cs
+}
+
+func redirectTLS(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "https://"+r.Host+r.RequestURI, http.StatusMovedPermanently)
 }
 
 func closeHandle(_ *http.Server, conn *tls.Conn, _ http.Handler) {
@@ -125,9 +146,14 @@ func closeHandle(_ *http.Server, conn *tls.Conn, _ http.Handler) {
 }
 
 func main() {
+	reader := bufio.NewReader(os.Stdin)
 	log.Printf("Running server for %v", domain)
-	err := runServer()
-	if err != nil {
-		log.Fatal(err)
+	cs := runServer()
+	for {
+		fmt.Println("Provide keyAuth to set up challenge:")
+		text, _ := reader.ReadString('\n')
+		text = strings.TrimSpace(text)
+		fmt.Printf("Setting keyAuth to --> %s <--\n", text)
+		cs.KeyAuth = text
 	}
 }
