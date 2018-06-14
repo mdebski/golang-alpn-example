@@ -54,10 +54,14 @@ func (cs *CertSelection) GenerateACMECert() (*tls.Certificate, error) {
 	}
 
 	shasum := sha256.Sum256([]byte(cs.KeyAuth))
+	v, err := asn1.Marshal(shasum[:])
+	if err != nil {
+		return nil, fmt.Errorf("asn1.Marshal(%v): %v", shasum[:], err)
+	}
 	acmeExtension := pkix.Extension{
 		Id:       IdPeAcmeIdentifierV1,
 		Critical: true,
-		Value:    shasum[:],
+		Value:    v,
 	}
 
 	template := &x509.Certificate{
